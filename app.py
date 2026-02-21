@@ -157,10 +157,10 @@ class GradCAM:
         self._bwd = target_layer.register_full_backward_hook(self._save_grad)
 
     def _save_act(self, module, inp, out):
-        self.activations = out
+        self.activations = out.clone()
 
     def _save_grad(self, module, grad_in, grad_out):
-        self.gradients = grad_out[0]
+        self.gradients = grad_out[0].clone()
 
     def remove_hooks(self):
         self._fwd.remove()
@@ -170,6 +170,8 @@ class GradCAM:
         for p in self.model.parameters():
             p.requires_grad_(True)
         self.model.eval()
+
+        img_tensor = img_tensor.clone()
 
         output = self.model(img_tensor)
         if class_idx is None:
@@ -181,8 +183,8 @@ class GradCAM:
         if self.gradients is None or self.activations is None:
             raise RuntimeError("Hooks did not fire — check target layer.")
 
-        grads = self.gradients[0].detach()    # C, H, W
-        acts  = self.activations[0].detach()  # C, H, W
+        grads = self.gradients[0].detach()   # C, H, W
+        acts  = self.activations[0].detach() # C, H, W
         w   = grads.mean(dim=(1, 2), keepdim=True)
         cam = (w * acts).sum(dim=0).relu().cpu().numpy()
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
@@ -394,4 +396,3 @@ else:
             st.success(f"✅ Both models agree: **{pred_r}**")
         else:
             st.warning(f"⚠️ Models disagree — ResNet18: **{pred_r}** | AlexNet: **{pred_a}**")
-
