@@ -14,10 +14,10 @@ import gdown
 # ══════════════════════════════════════════════════════════════════════════════
 # ✅ STEP 1: PASTE YOUR GOOGLE DRIVE FILE IDs HERE
 # ══════════════════════════════════════════════════════════════════════════════
-RESNET_GDRIVE_ID  = "https://drive.google.com/file/d/1LgHU0-FxIs4UGykU6WsH6QsW-p7QwgiV/view?usp=drive_link"
-ALEXNET_GDRIVE_ID = "https://drive.google.com/file/d/17vYkPxlvebAdCa9QIX5dg454ep1rI_MM/view?usp=drive_link"
+RESNET_GDRIVE_ID  = "1LgHU0-FxIs4UGykU6WsH6QsW-p7QwgiV"
+ALEXNET_GDRIVE_ID = "17vYkPxlvebAdCa9QIX5dg454ep1rI_MM"
 
-RESNET_PATH  = "resnet_model.pth"
+RESNET_PATH  = "best_model.pth"
 ALEXNET_PATH = "alexnet_model.pth"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -394,3 +394,4 @@ else:
             st.success(f"✅ Both models agree: **{pred_r}**")
         else:
             st.warning(f"⚠️ Models disagree — ResNet18: **{pred_r}** | AlexNet: **{pred_a}**")
+
