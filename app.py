@@ -26,6 +26,18 @@ ALEXNET_PATH   = "best_alexnet.pth"
 CUSTOMCNN_PATH = "custom_best_model.pth"   # we convert the zip → flat .pth
 EFFICIENT_PATH = "best_efficientnet.pth"
 
+# ── Cache invalidation: delete old cached files if they exist from previous bad runs ──
+# Remove this block after first successful deployment
+for _stale in ["best_efficientnet.pth", "custom_best_model.pth"]:
+    if os.path.exists(_stale):
+        try:
+            # Verify it loads correctly — delete if corrupt
+            _obj = torch.load(_stale, map_location="cpu", weights_only=False)
+            if not isinstance(_obj, dict) and not hasattr(_obj, "state_dict"):
+                os.remove(_stale)
+        except Exception:
+            os.remove(_stale)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLASS NAMES  (alphabetical from ImageFolder → FAKE=0, REAL=1 for all models)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -214,6 +226,39 @@ def ensure_customcnn_pth(pth_path, gdrive_id):
         st.stop()
 
 
+def smart_load_state_dict(model, path):
+    """
+    Robustly load weights regardless of how the file was saved:
+    - plain state_dict (OrderedDict of tensors)
+    - full model object (torch.save(model) instead of model.state_dict())
+    - nested dict like {'model': state_dict}
+    - DataParallel keys with 'module.' prefix
+    """
+    obj = torch.load(path, map_location='cpu', weights_only=False)
+
+    if isinstance(obj, dict):
+        # unwrap common nested wrappers
+        for key in ['model', 'state_dict', 'model_state_dict', 'net']:
+            if key in obj and isinstance(obj[key], dict):
+                obj = obj[key]
+                break
+        # strip DataParallel prefix
+        if any(k.startswith('module.') for k in obj.keys()):
+            obj = {k[len('module.'):]: v for k, v in obj.items()}
+        model.load_state_dict(obj, strict=False)
+
+    elif hasattr(obj, 'state_dict'):
+        sd = obj.state_dict()
+        if any(k.startswith('module.') for k in sd.keys()):
+            sd = {k[len('module.'):]: v for k, v in sd.items()}
+        model.load_state_dict(sd, strict=False)
+
+    else:
+        raise RuntimeError(f'Cannot load weights: unexpected type {type(obj)}')
+
+    return model
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MODEL LOADERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -222,7 +267,7 @@ def load_resnet():
     ensure_flat_pth(RESNET_PATH, RESNET_GDRIVE_ID, "ResNet18")
     m = models.resnet18(weights=None)
     m.fc = nn.Linear(m.fc.in_features, 2)
-    m.load_state_dict(torch.load(RESNET_PATH, map_location='cpu'))
+    smart_load_state_dict(m, RESNET_PATH)
     return m.eval()
 
 @st.cache_resource(show_spinner=False)
@@ -230,23 +275,57 @@ def load_alexnet():
     ensure_flat_pth(ALEXNET_PATH, ALEXNET_GDRIVE_ID, "AlexNet")
     m = models.alexnet(weights=None)
     m.classifier[6] = nn.Linear(4096, 2)
-    m.load_state_dict(torch.load(ALEXNET_PATH, map_location='cpu'))
+    smart_load_state_dict(m, ALEXNET_PATH)
     return m.eval()
 
 @st.cache_resource(show_spinner=False)
 def load_customcnn():
     ensure_customcnn_pth(CUSTOMCNN_PATH, CUSTOMCNN_GDRIVE_ID)
     m = CustomCNN(num_classes=2)
-    m.load_state_dict(torch.load(CUSTOMCNN_PATH, map_location='cpu'))
+    smart_load_state_dict(m, CUSTOMCNN_PATH)
     return m.eval()
+
+def smart_load_state_dict(model, path):
+    """
+    Robustly load weights into model regardless of how they were saved:
+    - plain state_dict (OrderedDict)
+    - full model object  (torch.save(model))
+    - nested dict        ({'model': state_dict} or {'state_dict': ...})
+    - DataParallel keys  ('module.' prefix)
+    """
+    obj = torch.load(path, map_location='cpu', weights_only=False)
+
+    # Case 1: already a state dict (OrderedDict of tensors)
+    if isinstance(obj, dict):
+        # Check for nested wrapper keys
+        for key in ['model', 'state_dict', 'model_state_dict', 'net']:
+            if key in obj and isinstance(obj[key], dict):
+                obj = obj[key]
+                break
+        # Strip DataParallel 'module.' prefix if present
+        if any(k.startswith('module.') for k in obj.keys()):
+            obj = {k[len('module.'):]: v for k, v in obj.items()}
+        model.load_state_dict(obj)
+
+    # Case 2: full model object saved with torch.save(model)
+    elif hasattr(obj, 'state_dict'):
+        sd = obj.state_dict()
+        if any(k.startswith('module.') for k in sd.keys()):
+            sd = {k[len('module.'):]: v for k, v in sd.items()}
+        model.load_state_dict(sd)
+
+    else:
+        raise RuntimeError(f"Cannot load weights from object of type {type(obj)}")
+
+    return model
+
 
 @st.cache_resource(show_spinner=False)
 def load_efficientnet():
-    # EfficientNet is also saved as a folder zip (same format as CustomCNN)
     ensure_customcnn_pth(EFFICIENT_PATH, EFFICIENT_GDRIVE_ID)
     m = models.efficientnet_b0(weights=None)
     m.classifier[1] = nn.Linear(m.classifier[1].in_features, 2)
-    m.load_state_dict(torch.load(EFFICIENT_PATH, map_location='cpu'))
+    smart_load_state_dict(m, EFFICIENT_PATH)
     return m.eval()
 
 MODEL_LOADERS = {
