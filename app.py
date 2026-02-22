@@ -9,25 +9,25 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import cv2
 import os
+import io
+import zipfile
 import gdown
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ✅ STEP 1: PASTE YOUR GOOGLE DRIVE FILE IDs HERE
-# For each .pth file: right-click → Share → Copy link
-# Extract only the ID part: drive.google.com/file/d/THIS_PART/view
+# GOOGLE DRIVE FILE IDs
 # ══════════════════════════════════════════════════════════════════════════════
-RESNET_GDRIVE_ID  = "1LgHU0-FxIs4UGykU6WsH6QsW-p7QwgiV"
-ALEXNET_GDRIVE_ID = "17vYkPxlvebAdCa9QIX5dg454ep1rI_MM"
-CUSTOMCNN_GDRIVE_ID  = "157T3ZhZYGGOprNrhuzWPnp_QkiF1uVla"
-EFFICIENT_GDRIVE_ID  = "1EckVZ1T8Dm-E-ec_82-9xQySrs8fWBS1"
+RESNET_GDRIVE_ID    = "1LgHU0-FxIs4UGykU6WsH6QsW-p7QwgiV"   # best_model.pth       (flat state_dict)
+ALEXNET_GDRIVE_ID   = "17vYkPxlvebAdCa9QIX5dg454ep1rI_MM"   # best_alexnet.pth     (flat state_dict)
+CUSTOMCNN_GDRIVE_ID = "157T3ZhZYGGOprNrhuzWPnp_QkiF1uVla"   # custom_best_model    (zip of folder)
+EFFICIENT_GDRIVE_ID = "1EckVZ1T8Dm-E-ec_82-9xQySrs8fWBS1"   # best_efficientnet.pt (flat state_dict)
 
 RESNET_PATH    = "best_model.pth"
 ALEXNET_PATH   = "best_alexnet.pth"
-CUSTOMCNN_PATH = "custom_best_model.pth"
+CUSTOMCNN_PATH = "custom_best_model.pth"   # we convert the zip → flat .pth
 EFFICIENT_PATH = "best_efficientnet.pth"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ✅ CONFIRM CLASS ORDER — run in notebook: print(full_train_dataset.classes)
+# CLASS NAMES  (alphabetical from ImageFolder → FAKE=0, REAL=1 for all models)
 # ══════════════════════════════════════════════════════════════════════════════
 CLASS_NAMES = ['FAKE', 'REAL']
 
@@ -61,46 +61,67 @@ PRECOMPUTED_METRICS = {
     },
 }
 
-# ── Transform ─────────────────────────────────────────────────────────────────
-transform = transforms.Compose([
+# ══════════════════════════════════════════════════════════════════════════════
+# TRANSFORMS — each model was trained with DIFFERENT transforms!
+# ResNet18  : 224x224, ImageNet stats
+# AlexNet   : 224x224, ImageNet stats
+# CustomCNN : 64x64,   Normalize([0.5,0.5,0.5],[0.5,0.5,0.5])   ← different!
+# EfficientNet: 224x224, ImageNet stats
+# ══════════════════════════════════════════════════════════════════════════════
+TRANSFORM_IMAGENET = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
+
+TRANSFORM_CUSTOM = transforms.Compose([
+    transforms.Resize((64, 64)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                         std=[0.5, 0.5, 0.5])
+])
+
+MODEL_TRANSFORMS = {
+    "ResNet18":    TRANSFORM_IMAGENET,
+    "AlexNet":     TRANSFORM_IMAGENET,
+    "CustomCNN":   TRANSFORM_CUSTOM,    # ← must use this or predictions will be garbage
+    "EfficientNet": TRANSFORM_IMAGENET,
+}
+
 device = torch.device("cpu")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CUSTOM CNN — architecture reverse-engineered from saved weights
-# Conv(3→32) → BN → ReLU → Pool
-# Conv(32→64) → BN → ReLU → Pool
-# Conv(64→128) → BN → ReLU → Pool
-# Linear(8192→256) → ReLU → Dropout → Linear(256→2)
+# CUSTOM CNN ARCHITECTURE
+# Input: 64x64  →  after 3x MaxPool(2)  →  8x8 feature maps
+# Linear: 128 * 8 * 8 = 8192 → 256 → 2
 # ══════════════════════════════════════════════════════════════════════════════
 class CustomCNN(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=2):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),    # 0
+            nn.Conv2d(3, 32, 3, padding=1),    # 0  64→64
             nn.BatchNorm2d(32),                 # 1
-            nn.ReLU(inplace=True),              # 2
-            nn.MaxPool2d(2, 2),                 # 3
-            nn.Conv2d(32, 64, 3, padding=1),    # 4
+            nn.ReLU(),                          # 2
+            nn.MaxPool2d(2),                    # 3  64→32
+
+            nn.Conv2d(32, 64, 3, padding=1),    # 4  32→32
             nn.BatchNorm2d(64),                 # 5
-            nn.ReLU(inplace=True),              # 6
-            nn.MaxPool2d(2, 2),                 # 7
-            nn.Conv2d(64, 128, 3, padding=1),   # 8
+            nn.ReLU(),                          # 6
+            nn.MaxPool2d(2),                    # 7  32→16
+
+            nn.Conv2d(64, 128, 3, padding=1),   # 8  16→16  ← GradCAM target
             nn.BatchNorm2d(128),                # 9
-            nn.ReLU(inplace=True),              # 10
-            nn.MaxPool2d(2, 2),                 # 11
+            nn.ReLU(),                          # 10
+            nn.MaxPool2d(2),                    # 11 16→8
         )
         self.classifier = nn.Sequential(
             nn.Flatten(),                       # 0
-            nn.Linear(8192, 256),               # 1
-            nn.ReLU(inplace=True),              # 2
+            nn.Linear(128 * 8 * 8, 256),        # 1
+            nn.ReLU(),                          # 2
             nn.Dropout(0.5),                    # 3
-            nn.Linear(256, 2),                  # 4
+            nn.Linear(256, num_classes),        # 4
         )
 
     def forward(self, x):
@@ -111,7 +132,7 @@ class CustomCNN(nn.Module):
 # DOWNLOAD HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 def gdrive_download(gdrive_id, save_path):
-    """Download from Google Drive, handles large file virus-scan warning."""
+    """Try multiple URL formats to handle large-file virus-scan warnings."""
     for url in [
         f"https://drive.google.com/uc?export=download&confirm=t&id={gdrive_id}",
         f"https://drive.google.com/uc?id={gdrive_id}",
@@ -126,75 +147,8 @@ def gdrive_download(gdrive_id, save_path):
     return False
 
 
-def load_pth_from_zip(zip_path):
-    """
-    Load a PyTorch state_dict from a zip that contains a model folder.
-    Works by re-opening the zip as a BytesIO so torch.load reads it as
-    a file (not a directory) — this is exactly how .pth files work internally.
-    The trick: rename the inner folder to 'archive' which is what torch expects,
-    then pass as BytesIO to torch.load.
-    """
-    with open(zip_path, 'rb') as f:
-        original_bytes = f.read()
-
-    src_zip = zipfile.ZipFile(io.BytesIO(original_bytes), 'r')
-
-    # Find the top-level folder name inside the zip (e.g. 'custom_best_model')
-    top_folder = None
-    for name in src_zip.namelist():
-        parts = name.split('/')
-        if parts[0]:
-            top_folder = parts[0]
-            break
-
-    if top_folder is None:
-        raise ValueError("Could not find top-level folder in zip")
-
-    # Rebuild zip with folder renamed to 'archive' (PyTorch's expected name)
-    new_buf = io.BytesIO()
-    with zipfile.ZipFile(new_buf, 'w', compression=zipfile.ZIP_STORED) as dst_zip:
-        for item in src_zip.infolist():
-            data    = src_zip.read(item.filename)
-            # Replace the original folder name with 'archive'
-            new_name = item.filename.replace(top_folder, 'archive', 1)
-            dst_zip.writestr(new_name, data)
-    src_zip.close()
-
-    new_buf.seek(0)
-    state_dict = torch.load(new_buf, map_location='cpu', weights_only=False)
-    return state_dict
-
-
-def ensure_model_pth(pth_path, gdrive_id, label):
-    """Download zip from Drive, extract state_dict, save as flat .pth file."""
-    if os.path.exists(pth_path):
-        return
-
-    zip_path = pth_path + ".zip"
-    st.info(f"⬇️ Downloading {label} from Google Drive...")
-
-    ok = gdrive_download(gdrive_id, zip_path)
-    if not ok:
-        st.error(
-            f"❌ Could not download {label}.\n"
-            f"Make sure the file is shared as 'Anyone with the link can view'.\n"
-            f"File ID: `{gdrive_id}`"
-        )
-        st.stop()
-
-    st.info(f"📦 Converting {label} zip → .pth ...")
-    try:
-        state_dict = load_pth_from_zip(zip_path)
-        torch.save(state_dict, pth_path)
-        os.remove(zip_path)
-        st.success(f"✅ {label} ready!")
-    except Exception as e:
-        st.error(f"❌ Failed to load {label}: {e}")
-        st.stop()
-
-
 def ensure_flat_pth(pth_path, gdrive_id, label):
-    """Download a plain .pth file (ResNet, AlexNet)."""
+    """Download a plain flat state_dict .pth/.pt file."""
     if os.path.exists(pth_path):
         return
     st.info(f"⬇️ Downloading {label} from Google Drive...")
@@ -203,6 +157,61 @@ def ensure_flat_pth(pth_path, gdrive_id, label):
         st.error(f"❌ Could not download {label}. File ID: `{gdrive_id}`")
         st.stop()
     st.success(f"✅ {label} ready!")
+
+
+def ensure_customcnn_pth(pth_path, gdrive_id):
+    """
+    CustomCNN was saved as a PyTorch folder (torch.save without .pth extension).
+    It was then zipped → the zip contains a folder with data.pkl + data/ files.
+    We rename the inner folder to 'archive' (PyTorch's internal name) and pass
+    as BytesIO to torch.load — this is how PyTorch reads .pth files internally.
+    """
+    if os.path.exists(pth_path):
+        return
+
+    zip_path = pth_path + ".zip"
+    st.info("⬇️ Downloading CustomCNN from Google Drive...")
+    ok = gdrive_download(gdrive_id, zip_path)
+    if not ok:
+        st.error(f"❌ Could not download CustomCNN. File ID: `{gdrive_id}`")
+        st.stop()
+
+    st.info("📦 Converting CustomCNN folder → .pth ...")
+    try:
+        with open(zip_path, 'rb') as f:
+            raw = f.read()
+
+        src = zipfile.ZipFile(io.BytesIO(raw), 'r')
+
+        # Find the top-level folder name (e.g. 'custom_best_model')
+        top = None
+        for name in src.namelist():
+            part = name.split('/')[0]
+            if part:
+                top = part
+                break
+
+        if top is None:
+            raise ValueError("No top-level folder found in zip")
+
+        # Rebuild zip renaming the folder to 'archive' — what torch.load expects
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_STORED) as dst:
+            for item in src.infolist():
+                data     = src.read(item.filename)
+                new_name = item.filename.replace(top, 'archive', 1)
+                dst.writestr(new_name, data)
+        src.close()
+
+        buf.seek(0)
+        state_dict = torch.load(buf, map_location='cpu', weights_only=False)
+        torch.save(state_dict, pth_path)
+        os.remove(zip_path)
+        st.success("✅ CustomCNN ready!")
+
+    except Exception as e:
+        st.error(f"❌ Failed to convert CustomCNN: {e}")
+        st.stop()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -226,34 +235,40 @@ def load_alexnet():
 
 @st.cache_resource(show_spinner=False)
 def load_customcnn():
-    ensure_model_pth(CUSTOMCNN_PATH, CUSTOMCNN_GDRIVE_ID, "CustomCNN")
-    m = CustomCNN()
+    ensure_customcnn_pth(CUSTOMCNN_PATH, CUSTOMCNN_GDRIVE_ID)
+    m = CustomCNN(num_classes=2)
     m.load_state_dict(torch.load(CUSTOMCNN_PATH, map_location='cpu'))
     return m.eval()
 
 @st.cache_resource(show_spinner=False)
 def load_efficientnet():
-    ensure_model_pth(EFFICIENT_PATH, EFFICIENT_GDRIVE_ID, "EfficientNet")
+    # EfficientNet was saved as flat state_dict (.pt) — same as ResNet/AlexNet
+    ensure_flat_pth(EFFICIENT_PATH, EFFICIENT_GDRIVE_ID, "EfficientNet")
     m = models.efficientnet_b0(weights=None)
     m.classifier[1] = nn.Linear(m.classifier[1].in_features, 2)
     m.load_state_dict(torch.load(EFFICIENT_PATH, map_location='cpu'))
     return m.eval()
 
 MODEL_LOADERS = {
-    "ResNet18":    load_resnet,
-    "AlexNet":     load_alexnet,
-    "CustomCNN":   load_customcnn,
+    "ResNet18":     load_resnet,
+    "AlexNet":      load_alexnet,
+    "CustomCNN":    load_customcnn,
     "EfficientNet": load_efficientnet,
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GRAD-CAM
+# Target layers (from notebooks):
+#   ResNet18    → model.layer4[-1]     (last residual block)
+#   AlexNet     → model.features[10]   (last conv)
+#   CustomCNN   → model.features[8]    (Conv 64→128, notebook Cell 29)
+#   EfficientNet→ model.features[-1]   (last features block, notebook Cell 20)
 # ══════════════════════════════════════════════════════════════════════════════
 class GradCAM:
     def __init__(self, model, target_layer):
-        self.model = model
-        self.gradients = None
+        self.model       = model
+        self.gradients   = None
         self.activations = None
         self._fwd = target_layer.register_forward_hook(self._save_act)
         self._bwd = target_layer.register_full_backward_hook(self._save_grad)
@@ -286,18 +301,19 @@ class GradCAM:
         return cam, class_idx
 
 
-def get_gradcam_layer(model, name):
-    layers = {
-        "ResNet18":    model.layer4[-1],
-        "AlexNet":     model.features[10],
-        "CustomCNN":   model.features[8],
-        "EfficientNet": model.features[7],
-    }
-    return layers.get(name)
+def get_gradcam_layer(model, model_name):
+    return {
+        "ResNet18":     model.layer4[-1],
+        "AlexNet":      model.features[10],
+        "CustomCNN":    model.features[8],
+        "EfficientNet": model.features[-1],
+    }.get(model_name)
 
 
 def gradcam_figure(cam_np, img_np):
-    cam_r   = cv2.resize(cam_np, (224, 224))
+    """img_np should be HxWx3 float [0,1]."""
+    target_size = (img_np.shape[1], img_np.shape[0])  # (W, H) for cv2
+    cam_r   = cv2.resize(cam_np, target_size)
     heatmap = plt.get_cmap('jet')(cam_r)[:, :, :3]
     overlay = (0.45 * heatmap + 0.55 * img_np).clip(0, 1)
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
@@ -308,8 +324,22 @@ def gradcam_figure(cam_np, img_np):
     return fig
 
 
+def denorm_for_display(img_tensor, model_name):
+    """Reverse the normalization for display, returning HxWx3 float [0,1]."""
+    t = img_tensor.clone().cpu()
+    if model_name == "CustomCNN":
+        # reverse Normalize([0.5]*3, [0.5]*3)
+        t = t * 0.5 + 0.5
+    else:
+        # reverse ImageNet normalize
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1)
+        std  = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1)
+        t = t * std + mean
+    return np.clip(t.permute(1,2,0).numpy(), 0, 1)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# UI
+# PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="CIFAKE Detector", page_icon="🔍", layout="wide")
 st.title("🔍 CIFAKE: Real vs AI-Generated Image Detector")
@@ -328,21 +358,28 @@ with st.sidebar:
     st.markdown("**Dataset:** [CIFAKE on Kaggle](https://www.kaggle.com/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images)")
 
 
-# ── MODE 1: Single Model ──────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 1 — SINGLE MODEL PREDICTION
+# ══════════════════════════════════════════════════════════════════════════════
 if "Single" in mode:
     st.subheader(f"🤖 Predict with {selected_model}")
     uploaded = st.file_uploader("Upload an image (JPG / PNG)", type=["jpg","jpeg","png"])
 
     if uploaded is not None:
-        img    = Image.open(uploaded).convert("RGB")
-        img_np = np.array(img.resize((224, 224))) / 255.0
+        img = Image.open(uploaded).convert("RGB")
+
+        # Use the correct transform for this model
+        tfm   = MODEL_TRANSFORMS[selected_model]
+        img_t = tfm(img).unsqueeze(0).to(device)
+
+        # For display: always show at 224x224
+        img_display_np = np.array(img.resize((224, 224))) / 255.0
 
         col1, col2 = st.columns([1, 2])
         col1.image(img, caption="Uploaded Image", use_container_width=True)
 
         with st.spinner(f"Loading {selected_model} and predicting..."):
-            net   = MODEL_LOADERS[selected_model]()
-            img_t = transform(img).unsqueeze(0).to(device)
+            net = MODEL_LOADERS[selected_model]()
             with torch.no_grad():
                 probs = F.softmax(net(img_t), dim=1)[0].cpu().numpy()
 
@@ -364,17 +401,23 @@ if "Single" in mode:
             st.subheader("🌡️ Grad-CAM Explanation")
             with st.spinner("Generating Grad-CAM..."):
                 try:
-                    layer = get_gradcam_layer(net, selected_model)
-                    gc    = GradCAM(net, layer)
-                    cam_np, _ = gc.generate(transform(img).unsqueeze(0), pred_idx)
+                    layer  = get_gradcam_layer(net, selected_model)
+                    gc     = GradCAM(net, layer)
+                    # Use same transform the model expects
+                    t_grad = tfm(img).unsqueeze(0).to(device)
+                    cam_np, _ = gc.generate(t_grad, pred_idx)
                     gc.remove_hooks()
+                    # Denorm correctly for display
+                    img_np = denorm_for_display(tfm(img), selected_model)
                     st.pyplot(gradcam_figure(cam_np, img_np))
                     plt.close()
                 except Exception as e:
                     st.warning(f"⚠️ Grad-CAM failed: {e}")
 
 
-# ── MODE 2: Comparison ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 2 — MODEL COMPARISON
+# ══════════════════════════════════════════════════════════════════════════════
 else:
     st.subheader("📊 All 4 Models — Comparison Dashboard")
     st.info("Uses pre-computed training metrics. Scroll down for live 4-model prediction.")
@@ -396,7 +439,7 @@ else:
         row = st.columns([2] + [1]*len(keys))
         row[0].markdown(f"**{name}**")
         for i, k in enumerate(keys):
-            best = max(PRECOMPUTED_METRICS[n][k] for n in model_names)
+            best   = max(PRECOMPUTED_METRICS[n][k] for n in model_names)
             trophy = " 🏆" if m[k] == best else ""
             row[i+1].markdown(f"`{m[k]:.4f}`{trophy}")
 
@@ -406,16 +449,16 @@ else:
 
     has_roc   = any(PRECOMPUTED_METRICS[n]['fpr'] is not None for n in model_names)
     tab_names = ["📊 Bar Chart"] + (["📈 ROC Curves"] if has_roc else []) + ["🔢 Confusion Matrices"]
-    tabs = st.tabs(tab_names)
+    tabs      = st.tabs(tab_names)
 
     with tabs[0]:
         fig, ax = plt.subplots(figsize=(13, 5))
-        n  = len(model_names)
+        nm = len(model_names)
         x  = np.arange(len(labels))
-        bw = 0.8 / n
+        bw = 0.8 / nm
         for i, (name, color) in enumerate(zip(model_names, colors)):
             vals   = [PRECOMPUTED_METRICS[name][k] for k in keys]
-            offset = (i - n/2 + 0.5) * bw
+            offset = (i - nm/2 + 0.5) * bw
             bars   = ax.bar(x + offset, vals, bw, label=name, color=color, alpha=0.85)
             for b in bars:
                 ax.text(b.get_x()+b.get_width()/2, b.get_height()+0.004,
@@ -459,13 +502,13 @@ else:
                                   type=["jpg","jpeg","png"], key="compare_uploader")
 
     if uploaded2 is not None:
-        img2   = Image.open(uploaded2).convert("RGB")
-        img2_t = transform(img2).unsqueeze(0).to(device)
+        img2 = Image.open(uploaded2).convert("RGB")
 
         with st.spinner("Loading all 4 models and predicting..."):
             results = {}
             for name, loader in MODEL_LOADERS.items():
-                net = loader()
+                net    = loader()
+                img2_t = MODEL_TRANSFORMS[name](img2).unsqueeze(0).to(device)
                 with torch.no_grad():
                     results[name] = F.softmax(net(img2_t), dim=1)[0].cpu().numpy()
 
