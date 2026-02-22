@@ -242,8 +242,8 @@ def load_customcnn():
 
 @st.cache_resource(show_spinner=False)
 def load_efficientnet():
-    # EfficientNet was saved as flat state_dict (.pt) — same as ResNet/AlexNet
-    ensure_flat_pth(EFFICIENT_PATH, EFFICIENT_GDRIVE_ID, "EfficientNet")
+    # EfficientNet is also saved as a folder zip (same format as CustomCNN)
+    ensure_customcnn_pth(EFFICIENT_PATH, EFFICIENT_GDRIVE_ID)
     m = models.efficientnet_b0(weights=None)
     m.classifier[1] = nn.Linear(m.classifier[1].in_features, 2)
     m.load_state_dict(torch.load(EFFICIENT_PATH, map_location='cpu'))
