@@ -13,49 +13,56 @@ import gdown
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ✅ STEP 1: PASTE YOUR GOOGLE DRIVE FILE IDs HERE
+# For each .pth file: right-click → Share → Copy link
+# Extract only the ID part: drive.google.com/file/d/THIS_PART/view
 # ══════════════════════════════════════════════════════════════════════════════
 RESNET_GDRIVE_ID  = "1LgHU0-FxIs4UGykU6WsH6QsW-p7QwgiV"
 ALEXNET_GDRIVE_ID = "17vYkPxlvebAdCa9QIX5dg454ep1rI_MM"
+CUSTOMCNN_GDRIVE_ID  = "157T3ZhZYGGOprNrhuzWPnp_QkiF1uVla"
+EFFICIENT_GDRIVE_ID  = "1EckVZ1T8Dm-E-ec_82-9xQySrs8fWBS1"
 
-RESNET_PATH  = "best_model.pth"
-ALEXNET_PATH = "alexnet_model.pth"
+RESNET_PATH    = "best_model.pth"
+ALEXNET_PATH   = "best_alexnet.pth"
+CUSTOMCNN_PATH = "custom_best_model.pth"           # we convert zip → single .pth
+EFFICIENT_PATH = "best_efficientnet.pth"           # we convert zip → single .pth
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ✅ STEP 2: SET YOUR CLASS ORDER
-# Run this in your notebook:  print(full_train_dataset.classes)
-# It prints ['FAKE', 'REAL'] or ['REAL', 'FAKE'] — match it exactly below
+# ✅ STEP 2: CONFIRM CLASS ORDER
+# Run in your notebook: print(full_train_dataset.classes)
 # ══════════════════════════════════════════════════════════════════════════════
 CLASS_NAMES = ['FAKE', 'REAL']
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ✅ STEP 3: PASTE YOUR ACTUAL METRICS FROM NOTEBOOK OUTPUT
+# ✅ STEP 3: PASTE YOUR REAL METRICS FROM NOTEBOOK
 # ══════════════════════════════════════════════════════════════════════════════
 PRECOMPUTED_METRICS = {
     "ResNet18": {
-        "accuracy":    0.9250,   # <-- replace with your real values
-        "precision":   0.9310,
-        "recall":      0.9180,
-        "f1":          0.9244,
-        "specificity": 0.9320,
-        "roc_auc":     0.9780,
-        "conf_matrix": np.array([[4650, 350], [410, 4590]]),  # [[TN,FP],[FN,TP]]
-        "fpr": None,   # set to your fpr array if you have it, else leave None
-        "tpr": None,   # set to your tpr array if you have it, else leave None
+        "accuracy": 0.9250, "precision": 0.9310, "recall": 0.9180,
+        "f1": 0.9244, "specificity": 0.9320, "roc_auc": 0.9780,
+        "conf_matrix": np.array([[4650, 350], [410, 4590]]),
+        "fpr": None, "tpr": None,
     },
     "AlexNet": {
-        "accuracy":    0.8950,
-        "precision":   0.8900,
-        "recall":      0.9010,
-        "f1":          0.8954,
-        "specificity": 0.8890,
-        "roc_auc":     0.9520,
+        "accuracy": 0.8950, "precision": 0.8900, "recall": 0.9010,
+        "f1": 0.8954, "specificity": 0.8890, "roc_auc": 0.9520,
         "conf_matrix": np.array([[4445, 555], [495, 4505]]),
-        "fpr": None,
-        "tpr": None,
+        "fpr": None, "tpr": None,
+    },
+    "CustomCNN": {
+        "accuracy": 0.8700, "precision": 0.8650, "recall": 0.8750,
+        "f1": 0.8700, "specificity": 0.8650, "roc_auc": 0.9300,
+        "conf_matrix": np.array([[4325, 675], [625, 4375]]),
+        "fpr": None, "tpr": None,
+    },
+    "EfficientNet": {
+        "accuracy": 0.9400, "precision": 0.9450, "recall": 0.9350,
+        "f1": 0.9400, "specificity": 0.9450, "roc_auc": 0.9850,
+        "conf_matrix": np.array([[4725, 275], [325, 4675]]),
+        "fpr": None, "tpr": None,
     },
 }
 
-# ── Transform (must exactly match what was used during training) ───────────────
+# ── Transform ─────────────────────────────────────────────────────────────────
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -63,76 +70,129 @@ transform = transforms.Compose([
                          std=[0.229, 0.224, 0.225])
 ])
 
-device = torch.device("cpu")   # Streamlit Cloud has no GPU — always use CPU
+device = torch.device("cpu")  # Streamlit Cloud has no GPU
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODEL DOWNLOAD & LOAD
+# CUSTOM CNN ARCHITECTURE
+# Reverse-engineered from your saved weights:
+#   features.0  → Conv2d(3,  32, 3, padding=1)
+#   features.1  → BatchNorm2d(32) + ReLU
+#   features.2  → MaxPool2d(2,2)
+#   features.4  → Conv2d(32, 64, 3, padding=1)
+#   features.5  → BatchNorm2d(64) + ReLU
+#   features.6  → MaxPool2d(2,2)
+#   features.8  → Conv2d(64,128, 3, padding=1)
+#   features.9  → BatchNorm2d(128) + ReLU
+#   features.10 → MaxPool2d(2,2)
+#   classifier.1 → Linear(8192, 256)
+#   classifier.4 → Linear(256, 2)
+# ══════════════════════════════════════════════════════════════════════════════
+class CustomCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),   # 0
+            nn.BatchNorm2d(32),                # 1
+            nn.ReLU(inplace=True),             # 2
+            nn.MaxPool2d(2, 2),                # 3
+            nn.Conv2d(32, 64, 3, padding=1),   # 4
+            nn.BatchNorm2d(64),                # 5
+            nn.ReLU(inplace=True),             # 6
+            nn.MaxPool2d(2, 2),                # 7
+            nn.Conv2d(64, 128, 3, padding=1),  # 8
+            nn.BatchNorm2d(128),               # 9
+            nn.ReLU(inplace=True),             # 10
+            nn.MaxPool2d(2, 2),                # 11
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),                      # 0
+            nn.Linear(8192, 256),              # 1  (128 * 8 * 8 after 3x pool on 64px input)
+            nn.ReLU(inplace=True),             # 2
+            nn.Dropout(0.5),                   # 3
+            nn.Linear(256, 2),                 # 4
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOWNLOAD HELPER — handles large files & virus-scan warning
 # ══════════════════════════════════════════════════════════════════════════════
 def download_if_missing(path, gdrive_id):
-    """Download model from Google Drive if not already on disk.
-    Tries multiple URL formats to handle large files and virus-scan warnings."""
     if os.path.exists(path):
-        return  # already downloaded
+        return
 
-    st.info(f"⬇️ Downloading {path} from Google Drive (first run only, may take a minute)...")
+    st.info(f"⬇️ Downloading {path} from Google Drive (first run only)...")
 
-    # Try 1: confirm=t bypasses the "too large to virus scan" warning page
-    try:
-        url = f"https://drive.google.com/uc?export=download&confirm=t&id={gdrive_id}"
-        gdown.download(url, path, quiet=False, fuzzy=True)
-        if os.path.exists(path) and os.path.getsize(path) > 1000:
-            st.success(f"✅ Downloaded {path}")
-            return
-    except Exception:
-        pass
+    for url in [
+        f"https://drive.google.com/uc?export=download&confirm=t&id={gdrive_id}",
+        f"https://drive.google.com/uc?id={gdrive_id}",
+        f"https://drive.google.com/file/d/{gdrive_id}/view?usp=sharing",
+    ]:
+        try:
+            gdown.download(url, path, quiet=False, fuzzy=True)
+            if os.path.exists(path) and os.path.getsize(path) > 1000:
+                st.success(f"✅ Downloaded {path}")
+                return
+        except Exception:
+            pass
 
-    # Try 2: fuzzy=True alone
-    try:
-        url2 = f"https://drive.google.com/uc?id={gdrive_id}"
-        gdown.download(url2, path, quiet=False, fuzzy=True)
-        if os.path.exists(path) and os.path.getsize(path) > 1000:
-            st.success(f"✅ Downloaded {path}")
-            return
-    except Exception:
-        pass
-
-    # Try 3: full share link format with fuzzy
-    try:
-        url3 = f"https://drive.google.com/file/d/{gdrive_id}/view?usp=sharing"
-        gdown.download(url3, path, quiet=False, fuzzy=True)
-        if os.path.exists(path) and os.path.getsize(path) > 1000:
-            st.success(f"✅ Downloaded {path}")
-            return
-    except Exception:
-        pass
-
-    # All failed — clean up any partial file and show help
     if os.path.exists(path):
         os.remove(path)
 
     st.error(
-        f"❌ **Could not download `{path}` from Google Drive.**\n\n"
-        f"**Most likely causes:**\n"
-        f"1. File sharing is not set to **'Anyone on the internet with this link can view'** — "
-        f"make sure it's fully public, not just 'your organisation'\n"
-        f"2. File ID `{gdrive_id}` is wrong — double-check by opening the link: "
-        f"`https://drive.google.com/file/d/{gdrive_id}/view`\n"
-        f"3. Google Drive download quota exceeded — try sharing via a different account\n\n"
-        f"**Quick test:** Open this URL in a browser — if it asks you to log in, the sharing is wrong:\n"
-        f"`https://drive.google.com/uc?id={gdrive_id}`"
+        f"❌ Could not download `{path}`.\n\n"
+        f"Check: File ID is `{gdrive_id}` — make sure sharing is "
+        f"**'Anyone on the internet with this link can view'**.\n\n"
+        f"Test URL: `https://drive.google.com/uc?id={gdrive_id}`"
     )
     st.stop()
 
 
+def download_zip_and_extract_pth(zip_path, pth_path, gdrive_id):
+    """Download a zipped model folder and re-save as a single .pth file."""
+    if os.path.exists(pth_path):
+        return
+
+    zip_file = zip_path + ".zip"
+    download_if_missing(zip_file, gdrive_id)
+
+    st.info(f"📦 Extracting {zip_file}...")
+    import zipfile
+    with zipfile.ZipFile(zip_file, 'r') as z:
+        z.extractall("/tmp/model_extract/")
+
+    # Find the folder that was extracted (the model folder)
+    extracted_folder = None
+    for root, dirs, files in os.walk("/tmp/model_extract/"):
+        if "data.pkl" in files:
+            extracted_folder = root
+            break
+
+    if extracted_folder is None:
+        st.error("❌ Could not find model data in zip. Check the zip structure.")
+        st.stop()
+
+    # Load using torch.load on the folder path
+    state_dict = torch.load(extracted_folder, map_location="cpu", weights_only=False)
+    torch.save(state_dict, pth_path)
+    st.success(f"✅ Converted and saved as {pth_path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODEL LOADERS
+# ══════════════════════════════════════════════════════════════════════════════
 @st.cache_resource(show_spinner=False)
 def load_resnet():
     download_if_missing(RESNET_PATH, RESNET_GDRIVE_ID)
     m = models.resnet18(weights=None)
     m.fc = nn.Linear(m.fc.in_features, 2)
     m.load_state_dict(torch.load(RESNET_PATH, map_location="cpu"))
-    m.to(device).eval()
-    return m
+    return m.eval()
 
 
 @st.cache_resource(show_spinner=False)
@@ -141,8 +201,32 @@ def load_alexnet():
     m = models.alexnet(weights=None)
     m.classifier[6] = nn.Linear(4096, 2)
     m.load_state_dict(torch.load(ALEXNET_PATH, map_location="cpu"))
-    m.to(device).eval()
-    return m
+    return m.eval()
+
+
+@st.cache_resource(show_spinner=False)
+def load_customcnn():
+    download_zip_and_extract_pth("custom_best_model", CUSTOMCNN_PATH, CUSTOMCNN_GDRIVE_ID)
+    m = CustomCNN()
+    m.load_state_dict(torch.load(CUSTOMCNN_PATH, map_location="cpu"))
+    return m.eval()
+
+
+@st.cache_resource(show_spinner=False)
+def load_efficientnet():
+    download_zip_and_extract_pth("best_efficientnet_cifake", EFFICIENT_PATH, EFFICIENT_GDRIVE_ID)
+    m = models.efficientnet_b0(weights=None)
+    m.classifier[1] = nn.Linear(m.classifier[1].in_features, 2)
+    m.load_state_dict(torch.load(EFFICIENT_PATH, map_location="cpu"))
+    return m.eval()
+
+
+MODEL_LOADERS = {
+    "ResNet18":    load_resnet,
+    "AlexNet":     load_alexnet,
+    "CustomCNN":   load_customcnn,
+    "EfficientNet": load_efficientnet,
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -157,10 +241,10 @@ class GradCAM:
         self._bwd = target_layer.register_full_backward_hook(self._save_grad)
 
     def _save_act(self, module, inp, out):
-        self.activations = out.clone()
+        self.activations = out.clone()       # clone prevents inplace view error
 
     def _save_grad(self, module, grad_in, grad_out):
-        self.gradients = grad_out[0].clone()
+        self.gradients = grad_out[0].clone() # clone prevents inplace view error
 
     def remove_hooks(self):
         self._fwd.remove()
@@ -170,39 +254,44 @@ class GradCAM:
         for p in self.model.parameters():
             p.requires_grad_(True)
         self.model.eval()
-
         img_tensor = img_tensor.clone()
-
         output = self.model(img_tensor)
         if class_idx is None:
             class_idx = output.argmax(dim=1).item()
-
         self.model.zero_grad()
         output[0, class_idx].backward()
-
         if self.gradients is None or self.activations is None:
-            raise RuntimeError("Hooks did not fire — check target layer.")
-
-        grads = self.gradients[0].detach()   # C, H, W
-        acts  = self.activations[0].detach() # C, H, W
+            raise RuntimeError("Hooks did not fire.")
+        grads = self.gradients[0].detach()
+        acts  = self.activations[0].detach()
         w   = grads.mean(dim=(1, 2), keepdim=True)
         cam = (w * acts).sum(dim=0).relu().cpu().numpy()
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
         return cam, class_idx
 
 
-def gradcam_figure(cam_np, img_np_224):
-    cam_r = cv2.resize(cam_np, (224, 224))
-    heatmap = plt.get_cmap('jet')(cam_r)[:, :, :3]
-    overlay = (0.45 * heatmap + 0.55 * img_np_224).clip(0, 1)
+def get_gradcam_layer(model, model_name):
+    """Return the best target layer for each architecture."""
+    if model_name == "ResNet18":
+        return model.layer4[-1]
+    elif model_name == "AlexNet":
+        return model.features[10]
+    elif model_name == "CustomCNN":
+        return model.features[8]   # last Conv2d
+    elif model_name == "EfficientNet":
+        return model.features[7]   # last conv block
+    return None
 
+
+def gradcam_figure(cam_np, img_np_224):
+    cam_r    = cv2.resize(cam_np, (224, 224))
+    heatmap  = plt.get_cmap('jet')(cam_r)[:, :, :3]
+    overlay  = (0.45 * heatmap + 0.55 * img_np_224).clip(0, 1)
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
     for ax, data, title in zip(axes,
                                 [img_np_224, heatmap, overlay],
                                 ["Original", "Grad-CAM", "Overlay"]):
-        ax.imshow(data)
-        ax.set_title(title)
-        ax.axis("off")
+        ax.imshow(data); ax.set_title(title); ax.axis("off")
     plt.tight_layout()
     return fig
 
@@ -212,20 +301,17 @@ def gradcam_figure(cam_np, img_np_224):
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="CIFAKE Detector", page_icon="🔍", layout="wide")
 st.title("🔍 CIFAKE: Real vs AI-Generated Image Detector")
-st.markdown("Upload any image to detect whether it is **REAL** or **AI-Generated**.")
+st.markdown("Detect whether an image is **REAL** or **AI-Generated** using 4 models.")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Options")
-    mode = st.radio(
-        "Select Mode",
-        ["🖼️ Single Model Prediction", "📊 Model Comparison"],
-        index=0
-    )
+    mode = st.radio("Select Mode", ["🖼️ Single Model Prediction", "📊 Model Comparison"], index=0)
     st.markdown("---")
     if "Single" in mode:
-        selected_model = st.selectbox("Choose Model", ["ResNet18", "AlexNet"])
-        show_gradcam   = st.checkbox("Show Grad-CAM Heatmap", value=True)
+        selected_model = st.selectbox("Choose Model",
+                                      ["ResNet18", "AlexNet", "CustomCNN", "EfficientNet"])
+        show_gradcam = st.checkbox("Show Grad-CAM Heatmap", value=True)
     st.markdown("---")
     st.markdown("**Dataset:** [CIFAKE on Kaggle](https://www.kaggle.com/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images)")
 
@@ -239,13 +325,13 @@ if "Single" in mode:
 
     if uploaded is not None:
         img    = Image.open(uploaded).convert("RGB")
-        img_np = np.array(img.resize((224, 224))) / 255.0  # for display + gradcam
+        img_np = np.array(img.resize((224, 224))) / 255.0
 
         col1, col2 = st.columns([1, 2])
         col1.image(img, caption="Uploaded Image", use_container_width=True)
 
         with st.spinner(f"Loading {selected_model} and predicting..."):
-            net = load_resnet() if selected_model == "ResNet18" else load_alexnet()
+            net   = MODEL_LOADERS[selected_model]()
             img_t = transform(img).unsqueeze(0).to(device)
             with torch.no_grad():
                 probs = F.softmax(net(img_t), dim=1)[0].cpu().numpy()
@@ -268,13 +354,16 @@ if "Single" in mode:
             st.subheader("🌡️ Grad-CAM Explanation")
             with st.spinner("Generating Grad-CAM..."):
                 try:
-                    target = net.layer4[-1] if selected_model == "ResNet18" else net.features[10]
-                    gc     = GradCAM(net, target)
-                    cam_np, _ = gc.generate(transform(img).unsqueeze(0).to(device), pred_idx)
-                    gc.remove_hooks()
-                    fig = gradcam_figure(cam_np, img_np)
-                    st.pyplot(fig)
-                    plt.close(fig)
+                    target = get_gradcam_layer(net, selected_model)
+                    if target is None:
+                        st.warning("Grad-CAM not supported for this model.")
+                    else:
+                        gc = GradCAM(net, target)
+                        cam_np, _ = gc.generate(transform(img).unsqueeze(0).to(device), pred_idx)
+                        gc.remove_hooks()
+                        fig = gradcam_figure(cam_np, img_np)
+                        st.pyplot(fig)
+                        plt.close(fig)
                 except Exception as e:
                     st.warning(f"⚠️ Grad-CAM failed: {e}")
 
@@ -283,14 +372,13 @@ if "Single" in mode:
 # MODE 2 — MODEL COMPARISON
 # ══════════════════════════════════════════════════════════════════════════════
 else:
-    st.subheader("📊 ResNet18 vs AlexNet — Comparison Dashboard")
-    st.info("Uses your pre-computed training metrics. Scroll down to run a live side-by-side prediction too.")
+    st.subheader("📊 All 4 Models — Comparison Dashboard")
+    st.info("Uses pre-computed training metrics. Scroll down for live side-by-side prediction.")
 
-    m_r = PRECOMPUTED_METRICS["ResNet18"]
-    m_a = PRECOMPUTED_METRICS["AlexNet"]
     keys   = ['accuracy', 'precision', 'recall', 'f1', 'specificity', 'roc_auc']
     labels = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'Specificity', 'ROC-AUC']
-    winner = "ResNet18" if m_r['f1'] >= m_a['f1'] else "AlexNet"
+    model_names = list(PRECOMPUTED_METRICS.keys())
+    colors = ['steelblue', 'tomato', 'seagreen', 'darkorchid']
 
     # ── Metric table ──────────────────────────────────────────────────────────
     st.markdown("### 📋 Metrics Summary")
@@ -299,102 +387,108 @@ else:
     for c, lbl in zip(hdr[1:], labels):
         c.markdown(f"**{lbl}**")
 
-    row_r = st.columns([2] + [1]*len(keys))
-    row_r[0].markdown("🔵 **ResNet18**")
-    for c, k in zip(row_r[1:], keys):
-        row_r[keys.index(k)+1].markdown(f"`{m_r[k]:.4f}`" + (" 🏆" if m_r[k] >= m_a[k] else ""))
+    for name in model_names:
+        m = PRECOMPUTED_METRICS[name]
+        row = st.columns([2] + [1]*len(keys))
+        row[0].markdown(f"**{name}**")
+        for i, k in enumerate(keys):
+            best_val = max(PRECOMPUTED_METRICS[n][k] for n in model_names)
+            trophy = " 🏆" if m[k] == best_val else ""
+            row[i+1].markdown(f"`{m[k]:.4f}`{trophy}")
 
-    row_a = st.columns([2] + [1]*len(keys))
-    row_a[0].markdown("🔴 **AlexNet**")
-    for c, k in zip(row_a[1:], keys):
-        row_a[keys.index(k)+1].markdown(f"`{m_a[k]:.4f}`" + (" 🏆" if m_a[k] > m_r[k] else ""))
-
+    # Winner by F1
+    winner = max(model_names, key=lambda n: PRECOMPUTED_METRICS[n]['f1'])
     st.success(f"🏆 **Overall Winner (F1-Score): {winner}**")
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    has_roc = m_r['fpr'] is not None and m_a['fpr'] is not None
+    has_roc = any(PRECOMPUTED_METRICS[n]['fpr'] is not None for n in model_names)
     tab_names = ["📊 Bar Chart"] + (["📈 ROC Curves"] if has_roc else []) + ["🔢 Confusion Matrices"]
     tabs = st.tabs(tab_names)
 
-    # Bar chart tab
+    # Bar chart
     with tabs[0]:
-        fig, ax = plt.subplots(figsize=(11, 5))
-        vr, va  = [m_r[k] for k in keys], [m_a[k] for k in keys]
-        x, bw   = np.arange(len(labels)), 0.35
-        b1 = ax.bar(x - bw/2, vr, bw, label='ResNet18', color='steelblue', alpha=0.85)
-        b2 = ax.bar(x + bw/2, va, bw, label='AlexNet',  color='tomato',    alpha=0.85)
-        for b in list(b1) + list(b2):
-            ax.text(b.get_x()+b.get_width()/2, b.get_height()+0.005,
-                    f'{b.get_height():.3f}', ha='center', va='bottom', fontsize=8)
+        fig, ax = plt.subplots(figsize=(13, 5))
+        n_models = len(model_names)
+        x  = np.arange(len(labels))
+        bw = 0.8 / n_models
+        for i, (name, color) in enumerate(zip(model_names, colors)):
+            vals   = [PRECOMPUTED_METRICS[name][k] for k in keys]
+            offset = (i - n_models/2 + 0.5) * bw
+            bars   = ax.bar(x + offset, vals, bw, label=name, color=color, alpha=0.85)
+            for b in bars:
+                ax.text(b.get_x()+b.get_width()/2, b.get_height()+0.004,
+                        f'{b.get_height():.3f}', ha='center', va='bottom', fontsize=7)
         ax.set_xticks(x); ax.set_xticklabels(labels)
-        ax.set_ylim(0, 1.15)
-        ax.set_title('ResNet18 vs AlexNet — Performance Metrics', fontweight='bold')
+        ax.set_ylim(0, 1.18)
+        ax.set_title('All Models — Performance Metrics', fontsize=13, fontweight='bold')
         ax.legend(); ax.grid(axis='y', alpha=0.3)
         st.pyplot(fig); plt.close(fig)
 
-    # ROC tab (only if arrays provided)
+    # ROC curves (if available)
     if has_roc:
         with tabs[1]:
             fig, ax = plt.subplots(figsize=(7, 6))
-            ax.plot(m_r['fpr'], m_r['tpr'], 'b-', lw=2, label=f"ResNet18 (AUC={m_r['roc_auc']:.4f})")
-            ax.plot(m_a['fpr'], m_a['tpr'], 'r-', lw=2, label=f"AlexNet  (AUC={m_a['roc_auc']:.4f})")
+            for name, color in zip(model_names, colors):
+                m = PRECOMPUTED_METRICS[name]
+                if m['fpr'] is not None:
+                    ax.plot(m['fpr'], m['tpr'], lw=2, color=color,
+                            label=f"{name} (AUC={m['roc_auc']:.4f})")
             ax.plot([0,1],[0,1],'k--', lw=1, label='Random')
             ax.set_xlabel('FPR'); ax.set_ylabel('TPR')
             ax.set_title('ROC Curves'); ax.legend(loc='lower right'); ax.grid(alpha=0.3)
             st.pyplot(fig); plt.close(fig)
 
-    # Confusion matrix tab
+    # Confusion matrices
     with tabs[-1]:
-        c1, c2 = st.columns(2)
-        for col, name, cm_mat, cmap_n in [
-            (c1, "ResNet18", m_r['conf_matrix'], 'Blues'),
-            (c2, "AlexNet",  m_a['conf_matrix'], 'Reds'),
-        ]:
-            fig, ax = plt.subplots(figsize=(4, 3))
+        cols = st.columns(4)
+        cmaps = ['Blues', 'Reds', 'Greens', 'Purples']
+        for col, name, cmap_n in zip(cols, model_names, cmaps):
+            cm_mat = PRECOMPUTED_METRICS[name]['conf_matrix']
+            fig, ax = plt.subplots(figsize=(3.5, 3))
             sns.heatmap(cm_mat, annot=True, fmt='d', cmap=cmap_n,
                         xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES,
                         ax=ax, cbar=False)
-            ax.set_title(f'{name} Confusion Matrix', fontweight='bold')
+            ax.set_title(name, fontweight='bold', fontsize=10)
             ax.set_xlabel('Predicted'); ax.set_ylabel('True')
             col.pyplot(fig); plt.close(fig)
 
     # ── Live side-by-side ─────────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("🖼️ Live Side-by-Side Prediction")
-    uploaded2 = st.file_uploader("Upload an image to compare both models",
+    st.subheader("🖼️ Live 4-Model Comparison")
+    uploaded2 = st.file_uploader("Upload an image to run all 4 models",
                                   type=["jpg","jpeg","png"], key="compare_uploader")
 
     if uploaded2 is not None:
         img2  = Image.open(uploaded2).convert("RGB")
         img2_t = transform(img2).unsqueeze(0).to(device)
 
-        with st.spinner("Running both models..."):
-            rnet = load_resnet()
-            anet = load_alexnet()
-            with torch.no_grad():
-                out_r = F.softmax(rnet(img2_t), dim=1)[0].cpu().numpy()
-                out_a = F.softmax(anet(img2_t), dim=1)[0].cpu().numpy()
+        with st.spinner("Loading all 4 models and predicting..."):
+            results = {}
+            for name, loader in MODEL_LOADERS.items():
+                net = loader()
+                with torch.no_grad():
+                    probs = F.softmax(net(img2_t), dim=1)[0].cpu().numpy()
+                results[name] = probs
 
-        pred_r = CLASS_NAMES[int(np.argmax(out_r))]
-        pred_a = CLASS_NAMES[int(np.argmax(out_a))]
-        col1, col2, col3 = st.columns(3)
+        st.image(img2, caption="Uploaded Image", width=200)
+        cols = st.columns(4)
+        for col, (name, probs) in zip(cols, results.items()):
+            pred   = CLASS_NAMES[int(np.argmax(probs))]
+            conf   = float(max(probs)) * 100
+            badge  = "🟢" if pred == "REAL" else "🔴"
+            col.markdown(f"### {name}")
+            col.markdown(f"**{badge} {pred}**")
+            col.progress(conf / 100)
+            col.markdown(f"`{conf:.1f}%` confident")
+            for i, n in enumerate(CLASS_NAMES):
+                col.write(f"- {n}: `{probs[i]*100:.2f}%`")
 
-        col1.image(img2, caption="Uploaded Image", use_container_width=True)
-
-        col2.markdown("### 🔵 ResNet18")
-        col2.markdown(f"**{'🟢' if pred_r=='REAL' else '🔴'} {pred_r}** — `{max(out_r)*100:.1f}%`")
-        for i, n in enumerate(CLASS_NAMES):
-            col2.write(f"- {n}: `{out_r[i]*100:.2f}%`")
-
-        col3.markdown("### 🔴 AlexNet")
-        col3.markdown(f"**{'🟢' if pred_a=='REAL' else '🔴'} {pred_a}** — `{max(out_a)*100:.1f}%`")
-        for i, n in enumerate(CLASS_NAMES):
-            col3.write(f"- {n}: `{out_a[i]*100:.2f}%`")
-
-        if pred_r == pred_a:
-            st.success(f"✅ Both models agree: **{pred_r}**")
+        # Agreement check
+        preds = [CLASS_NAMES[int(np.argmax(p))] for p in results.values()]
+        if len(set(preds)) == 1:
+            st.success(f"✅ All 4 models agree: **{preds[0]}**")
         else:
-            st.warning(f"⚠️ Models disagree — ResNet18: **{pred_r}** | AlexNet: **{pred_a}**")
-
-
+            votes = {c: preds.count(c) for c in set(preds)}
+            majority = max(votes, key=votes.get)
+            st.warning(f"⚠️ Models disagree — majority vote: **{majority}** ({votes.get(majority,0)}/4 models)")
