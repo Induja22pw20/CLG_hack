@@ -154,33 +154,77 @@ def download_if_missing(path, gdrive_id):
 
 
 def download_zip_and_extract_pth(zip_path, pth_path, gdrive_id):
-    """Download a zipped model folder and re-save as a single .pth file."""
+    """Download a zipped PyTorch model folder and save as a flat .pth file."""
     if os.path.exists(pth_path):
         return
 
-    zip_file = zip_path + ".zip"
+    import zipfile, shutil, pickle, sys
+
+    zip_file    = zip_path + ".zip"
+    extract_dir = f"/tmp/extract_{zip_path}/"
+
+    if os.path.exists(extract_dir):
+        shutil.rmtree(extract_dir)
+
     download_if_missing(zip_file, gdrive_id)
 
     st.info(f"📦 Extracting {zip_file}...")
-    import zipfile
-    with zipfile.ZipFile(zip_file, 'r') as z:
-        z.extractall("/tmp/model_extract/")
+    with zipfile.ZipFile(zip_file, "r") as z:
+        z.extractall(extract_dir)
 
-    # Find the folder that was extracted (the model folder)
-    extracted_folder = None
-    for root, dirs, files in os.walk("/tmp/model_extract/"):
+    # Find the subfolder that contains data.pkl
+    model_folder = None
+    for root, dirs, files in os.walk(extract_dir):
         if "data.pkl" in files:
-            extracted_folder = root
+            model_folder = root
             break
 
-    if extracted_folder is None:
-        st.error("❌ Could not find model data in zip. Check the zip structure.")
+    if model_folder is None:
+        st.error(f"❌ No data.pkl found inside {zip_file}.")
         st.stop()
 
-    # Load using torch.load on the folder path
-    state_dict = torch.load(extracted_folder, map_location="cpu", weights_only=False)
+    st.info(f"🔄 Loading weights from extracted folder...")
+
+    # PyTorch saves models as a folder (zip internally) when using torch.save on newer versions.
+    # We load data.pkl manually then resolve the tensor storage files.
+    data_dir = os.path.join(model_folder, "data")
+    pkl_path = os.path.join(model_folder, "data.pkl")
+
+    class StorageLoader(pickle.Unpickler):
+        """Custom unpickler that loads tensor data from the data/ subfolder."""
+        def persistent_load(self, pid):
+            # pid format: ('storage', storage_type, key, location, size)
+            storage_type, key, location, size = pid[1], pid[2], pid[3], pid[4]
+            filename = os.path.join(data_dir, str(key))
+            nbytes = size * torch.finfo(torch.float32).bits // 8
+            with open(filename, "rb") as f:
+                data = f.read()
+            storage = torch.ByteStorage.from_buffer(data, byte_order="little")
+            return torch.tensor([], dtype=torch.float32).set_(storage).view(-1)[:size]
+
+    # Repack the extracted folder as a proper torch-compatible zip file
+    # This is the most reliable approach across all PyTorch versions
+    repacked = pth_path + ".tmp.pt"
+    folder_name = os.path.basename(model_folder)
+    with zipfile.ZipFile(repacked, "w", compression=zipfile.ZIP_STORED) as zout:
+        for root, dirs, files in os.walk(model_folder):
+            for file in sorted(files):
+                filepath = os.path.join(root, file)
+                # arcname must be: foldername/filename or foldername/data/key
+                arcname = folder_name + filepath[len(model_folder):]
+                zout.write(filepath, arcname)
+    try:
+        state_dict = torch.load(repacked, map_location="cpu", weights_only=False)
+    except Exception as e:
+        st.error(f"❌ Failed to load model weights: {e}")
+        st.stop()
+    finally:
+        if os.path.exists(repacked):
+            os.remove(repacked)
+
     torch.save(state_dict, pth_path)
-    st.success(f"✅ Converted and saved as {pth_path}")
+    shutil.rmtree(extract_dir)
+    st.success(f"✅ Model ready: {pth_path}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
