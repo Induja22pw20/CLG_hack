@@ -16,7 +16,10 @@ import gdown
 # ══════════════════════════════════════════════════════════════════════════════
 # GOOGLE DRIVE FILE IDs
 # ══════════════════════════════════════════════════════════════════════════════
-
+RESNET_GDRIVE_ID    = "1LgHU0-FxIs4UGykU6WsH6QsW-p7QwgiV"   # best_model.pth       (flat state_dict)
+ALEXNET_GDRIVE_ID   = "17vYkPxlvebAdCa9QIX5dg454ep1rI_MM"   # best_alexnet.pth     (flat state_dict)
+CUSTOMCNN_GDRIVE_ID = "157T3ZhZYGGOprNrhuzWPnp_QkiF1uVla"   # custom_best_model    (zip of folder)
+EFFICIENT_GDRIVE_ID = "1EckVZ1T8Dm-E-ec_82-9xQySrs8fWBS1"   # best_efficientnet.pt (flat state_dict)
 
 RESNET_PATH    = "best_model.pth"
 ALEXNET_PATH   = "best_alexnet.pth"
@@ -608,6 +611,7 @@ else:
             st.success(f"✅ All 4 models agree: **{majority}**")
         else:
             st.warning(f"⚠️ Models disagree — majority vote: **{majority}** ({votes}/4)")
+
 
 
 
